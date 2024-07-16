@@ -1,0 +1,6 @@
+.venv
+.mypy_cache
+__pycache__
+*.pyc
+generated
+.DS_Store
