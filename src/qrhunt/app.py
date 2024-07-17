@@ -1,12 +1,11 @@
-import fileinput
-import queue
-import threading
+import csv
+import os
 import time
-from datetime import timedelta
-from typing import Text
+from collections import defaultdict
+from dataclasses import dataclass
+from datetime import date, timedelta
 
 import art  # type: ignore
-from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
@@ -15,6 +14,16 @@ from textual.timer import Timer
 from textual.widgets import Button, Footer, Label, ListItem, ListView, RichLog, Static, TextArea
 
 from .animals import ANIMAL_RE, ANIMALS_BY_NAME, Animal
+
+
+@dataclass(frozen=True)
+class LogEntry:
+    time: float
+    points: int
+    animals: list[str]
+
+    def row(self) -> list[str]:
+        return [f"{self.time:.02f}", str(self.points), " ".join(self.animals)]
 
 
 class TimeDisplay(Static):
@@ -59,12 +68,22 @@ class ContestantResult(Static):
 
     def compose(self) -> ComposeResult:
         total_points = sum(animal.points for animal in self.hits)
-        yield Label(f"{self.time.total_seconds():.02f}s    {total_points:+}", classes="resulttime")
+        yield Label(
+            art.text2art(f"{self.time.total_seconds():.02f}s    {total_points:+}", font="tarty3"),
+            classes="resulttime",
+        )
+
+        grouped_hits: dict[str, int] = defaultdict(int)
+
         for animal in self.hits:
+            grouped_hits[animal.name] += 1
+
+        for animal_name, count in sorted(grouped_hits.items(), key=lambda x: x[0]):
+            animal = ANIMALS_BY_NAME[animal_name]
             sign = "+" if animal.points >= 0 else ""
-            points = f"{sign}{animal.points}"
+            points = f"{sign}{animal.points*count}"
             yield Label(
-                f"{points:>4} - {animal.name}",
+                f"{count:>3}x - {animal.name:8} {points:>5}",
                 classes="positive" if animal.points >= 0 else "negative",
             )
 
@@ -79,10 +98,15 @@ class HuntApp(App[None]):
 
     TEXT_DEBOUNCE = 0.3
 
+    LOGS_DIR = "logs"
+
     def __init__(self) -> None:
         super().__init__()
 
         self.text_timer: Timer | None = None
+        self.text_first_time = 0.0
+
+        os.makedirs(self.LOGS_DIR, exist_ok=True, mode=0o755)
 
     def compose(self) -> ComposeResult:
         yield Horizontal(
@@ -128,7 +152,15 @@ class HuntApp(App[None]):
         if self.text_timer is not None:
             self.text_timer.reset()
         else:
+            self.text_first_time = time.monotonic()
             self.text_timer = self.set_interval(self.TEXT_DEBOUNCE, self._process_input, repeat=1)
+
+    def _write_log(self, entry: LogEntry) -> None:
+        path = os.path.join(self.LOGS_DIR, date.today().isoformat() + ".csv")
+
+        with open(path, "a") as f:
+            writer = csv.writer(f)
+            writer.writerow(entry.row())
 
     def _process_input(self) -> None:
         self.text_timer = None
@@ -140,20 +172,33 @@ class HuntApp(App[None]):
             return
 
         time_display = self.query_one(TimeDisplay)
-        total_time = timedelta(seconds=time_display.total - self.TEXT_DEBOUNCE)
+        total_time = timedelta(seconds=self.text_first_time - time_display.start_time)
 
+        dedup: set[str] = set()
         hits: list[Animal] = []
         for line in lines:
             m = ANIMAL_RE.match(line)
             if not m:
                 self.query_one(RichLog).write(f"failed to match '{line}'")
                 continue
+
+            if m.group(0) in dedup:
+                continue
+            dedup.add(m.group(0))
+
             animal = ANIMALS_BY_NAME.get(m.group(1))
             if not animal:
                 self.query_one(RichLog).write(f"unknown animal '{line}'")
                 continue
             hits.append(animal)
 
-        self.query_one("#hits_list", ListView).append(ListItem(ContestantResult(total_time, hits)))
+        self._write_log(
+            LogEntry(
+                total_time.total_seconds(), sum(a.points for a in hits), [a.name for a in hits]
+            )
+        )
 
+        self.query_one("#hits_list", ListView).insert(
+            0, (ListItem(ContestantResult(total_time, hits)),)
+        )
         input.clear()

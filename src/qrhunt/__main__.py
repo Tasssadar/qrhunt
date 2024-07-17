@@ -14,11 +14,26 @@ def main() -> None:
         default="./generated",
         help="Destination directory for the generated QR codes",
     )
+    parser.add_argument(
+        "--mutations",
+        default=3,
+        help="Amount of unique QR codes for each animal",
+    )
+    parser.add_argument(
+        "--sil",
+        action="store_true",
+        help="Use siluette instead of pawprints",
+    )
+    parser.add_argument(
+        "--paws",
+        action="store_true",
+        help="Generate only paws",
+    )
 
     args = parser.parse_args()
 
     if args.generate:
-        generate.generate(args.generate_dest)
+        generate.generate(args.generate_dest, args.mutations, args.sil, args.paws)
         return
 
     app = HuntApp()
